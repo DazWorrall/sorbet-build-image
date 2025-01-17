@@ -4,14 +4,21 @@ on:
   push:
 
 jobs:
-  docker:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+
+    name: Build on ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -26,14 +33,38 @@ jobs:
       - name: Setup tag
         run: |
           echo "repo_downcase=${GITHUB_REPOSITORY,,}" >>${GITHUB_ENV}
-          echo "image_tag=${GITHUB_SHA:0:7}" >>${GITHUB_ENV}
+          echo "image_tag=${GITHUB_SHA:0:7}-${{ matrix.arch }}" >>${GITHUB_ENV}
 
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64
+          provenance: false
           push: true
           tags: |
             ghcr.io/${{ env.repo_downcase }}:${{ env.image_tag }}
-            ${{ github.ref == 'refs/heads/master' && format('ghcr.io/{0}:{1}', env.repo_downcase, 'latest') || '' }}
+
+  create-manifest:
+    name: Merge and push
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest
+        run: |
+          repo_downcase=${GITHUB_REPOSITORY,,}
+          revision=${GITHUB_SHA:0:7}
+          tag=ghcr.io/${repo_downcase}:${revision}
+
+          docker manifest create ${tag} \
+            ${tag}-amd64 \
+            ${tag}-arm64
+
+          docker manifest push ${tag}
